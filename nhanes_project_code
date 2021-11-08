@@ -1,0 +1,355 @@
+#install.packages("mice")
+#install.packages("ggplot2")
+#install.packages("purrr")
+library(mice)
+library(ggplot2)
+library(purrr)
+
+nhanes <- read.csv(file = 'nhanes.csv')
+
+# Changing NAFLD to two categories 1:having NAFLD, and 0:Non-NAFLD
+sum(is.na(nhanes$NAFLD))
+nhanes$NAFLD <- ifelse(!nhanes$NAFLD=="1)Non-NAFLD",1,0 )
+
+# Replacing entries including "Unknown" with NAs 
+
+for (i in names(nhanes)) {
+  nhanes[,i][grepl("[Uu]nknown", nhanes[,i])] <- NA 
+} 
+
+#Turning character variables into factors
+
+nhanes_char <- nhanes[, sapply(nhanes, class) == 'character']
+
+for(i in names(nhanes_char)){
+  nhanes[,i ] <- as.factor(nhanes[,i ])
+}
+
+nhanes[ nhanes$FAST>0.3  , c("MET2","FAST")]   # Relation is as I expected
+nhanes[ is.na(nhanes$FAST)  , c("MET2","FAST")]   # Relation is as I expected
+
+nhanes[ (nhanes$WAIST >= 102)  & (nhanes$GENDER=="1)Men") , c("MET1E","WAIST","GENDER")]  
+nhanes[ (nhanes$BMI < 25)  , c("MET4","BMI")]  # Relation is as I expected
+nhanes[ (nhanes$RIDAGEYR >= 40 & nhanes$RIDAGEYR <= 59  )  , c("RIDAGEYR","AGEGRP")] # Relation is as I expected
+nhanes[ (nhanes$BMI >= 20 ) & (nhanes$BMI < 25 )   , c("BMI","BMIGRP")]  # Relation is as I expected
+
+ggplot(nhanes, aes(x = ALP, y=MET5)) + geom_point() #Relation is not as I expected.
+
+
+# Checking correlations
+round(cor( nhanes[, sapply(nhanes, class) == 'integer' |sapply(nhanes, class) == 'numeric' ], 
+     method = c("pearson"), use = "complete.obs"), 3)
+
+boxplot(BMI ~ GENDER, data = nhanes, ylab = "BMI")
+
+# GLUCOSE and IFG relationship
+plot(nhanes$GLUCOSE, nhanes$IFG)
+sort(nhanes[nhanes$IFG == 0, "GLUCOSE" ]) 
+sort(nhanes[nhanes$IFG == 1, "GLUCOSE" ]) 
+
+# Dependence between factor variables
+nhanes_fac <- nhanes[, sapply(nhanes, class) == 'factor']
+chisq.test(nhanes$STROKE, nhanes$H_CHF, correct=FALSE)
+
+# Treating NAs
+
+# 19615 out of 249015 entries are missing
+sum(is.na(nhanes))   
+
+# Approximately 8% of the data is missing
+mean(is.na(nhanes))
+
+# Distribution of the missing values in data by variables
+
+num_of_nas <- vector()
+mean_of_nas <- vector()
+
+num_of_nas <- colSums(is.na(nhanes))
+mean_of_nas <- num_of_nas/nrow(nhanes)
+
+mean_of_nas[order(mean_of_nas)]
+num_of_nas[order(num_of_nas)]
+
+# Distribution of the missingness by samples
+
+num_of_nas2 <- vector()
+mean_of_nas2 <- vector()
+
+num_of_nas2 <- rowSums(is.na(nhanes))
+mean_of_nas2 <- num_of_nas2/ncol(nhanes)
+
+mean_of_nas2[order(mean_of_nas2,decreasing = TRUE)]
+ 
+#To explore md patterns, we exclude variables with less than 50 missing value
+vrbls_na_check <- names(num_of_nas) [num_of_nas > 50]
+
+pattern <- md.pattern(nhanes[ , names(nhanes) %in% vrbls_na_check ], rotate.names = TRUE)
+write.csv(pattern, file = "pattern.csv")
+
+md_pairs <- md.pairs(nhanes[ , names(nhanes) %in% vrbls_na_check ])
+write.csv(md_pairs, file = "md_pairs.csv")
+
+View(md_pairs$rr)
+View(md_pairs$mr)
+
+# We drop variables with more than 45% of missingness
+
+vrbls_to_drop <- names(mean_of_nas) [mean_of_nas > 0.45]
+nhanes = nhanes[,!(names(nhanes) %in% vrbls_to_drop)]
+
+#We drop samples with more than 25% missing values
+nhanes <- nhanes[  mean_of_nas2 < 0.25,]
+
+# Patterns after dropping the variables and samples
+vrbls_na_check <- names(num_of_nas) [num_of_nas > 50]
+
+pattern_after <- md.pattern(nhanes[ , names(nhanes) %in% vrbls_na_check ], rotate.names = TRUE)
+write.csv(pattern_after, file = "pattern_after.csv")
+
+md_pairs_after <- md.pairs(nhanes[ , names(nhanes) %in% vrbls_na_check ])
+write.csv(md_pairs_after, file = "md_pairs_after.csv")
+
+vrbls_to_drop2 <- c("SEQN" , "COHORT", "AUTO_HEP", "VIR_HEP",
+                   "LIV_CIR", "LIV_FIB", "WGTSURG", "BMIGRP", "AGEGRP",
+                   "MET2", "MET1E", "MET4", "WAIST")
+
+nhanes = nhanes[,!(names(nhanes) %in% vrbls_to_drop2)]
+
+#imputation with mice
+imp <- mice(nhanes,maxit=0)
+predM <- imp$predictorMatrix    # I noticed that COHORT is kicked out from the prediction matrix? Because it is collinear with ??
+#predM[ , c("SEQN")]=0   #I got rid of the variable instead
+meth <- imp$method
+imp <- mice(nhanes,maxit=10)
+plot(imp)
+nhanes_complete <- complete(imp)
+stripplot(imp, NFS~.imp, pch=20, cex=1)
+densityplot(imp)
+
+
+#PLOTS
+nhanes_fac <- nhanes[, sapply(nhanes, class) == 'factor']
+nhanes_num <- nhanes[, sapply(nhanes, class) == 'numeric']
+
+
+bar_fun = function(x) {
+  ggplot(nhanes, aes(x = .data[[x]]) ) +
+    geom_bar(fill = "brown", width = 0.7) +
+    coord_flip() + 
+    xlab(x) + ylab("Number of Observations")
+}
+
+bar_plots = map(names(nhanes_fac), ~bar_fun(.x) )
+bar_plots
+
+bar_fill_fun = function(x) {
+  ggplot(nhanes, aes(x = .data[[x]]) ) +
+    geom_bar() +
+    facet_grid(NAFLD ~ .) +
+    coord_flip() + 
+    xlab(x) + ylab("Number of Observations") + 
+    theme_bw() 
+}
+
+bar_fill_plots = map(names(nhanes_fac), ~bar_fill_fun(.x) )
+bar_fill_plots
+
+bar_fill_prop_fun = function(x) {
+  ggplot(nhanes, aes(x = .data[[x]] , fill = NAFLD) ) +
+    geom_bar(position = "fill" ) +
+    coord_flip() + 
+    xlab(x) + ylab("Propensity") + 
+    theme_bw() 
+}
+
+bar_fill_prop_plots = map(names(nhanes_fac), ~bar_fill_prop_fun(.x) )
+bar_fill_prop_plots 
+
+scatter_fun = function(x,y) {
+  ggplot(nhanes, aes(x = .data[[x]], y= .data[[y]], color=NAFLD)) +
+    geom_point() +
+    xlab(x) + ylab(y)
+}
+
+scatter_plots = map(names(nhanes_num), ~scatter_fun(.x, "BMI") )
+scatter_plots
+
+scatter_plots = map(names(nhanes_num), ~scatter_fun(.x, "FAST") )
+scatter_plots
+
+box_fun = function(x,y) {
+  ggplot(nhanes, aes(x = .data[[x]], y= .data[[y]], color=NAFLD)) +
+    geom_boxplot() +
+    xlab(x) + ylab(y)
+}
+
+box_plots = map(names(nhanes_num), ~box_fun(.x, "CITIZEN") )
+box_plots
+
+
+
+# Splitting data 
+smp_size <- floor(2/3 * nrow(nhanes_complete))
+
+train_ind <- sample(seq_len(nrow(nhanes_complete)), size = smp_size)
+
+#training without "SEQN" , "COHORT", "AUTO_HEP", "VIR_HEP"
+#"LIV_CIR", "LIV_FIB", "WGT_SURG", "BMIGRP", "AGEGRP",
+#"MET2", "MET1E", "MET4", "WAIST", "LIVER_STILL", "TYPE2DB",
+#"DBPREV", "GLUCOSE", "MET1A"
+
+vrbls_to_drop <- c("SEQN" , "COHORT", "AUTO_HEP", "VIR_HEP",
+"LIV_CIR", "LIV_FIB", "WGTSURG", "BMIGRP", "AGEGRP",
+"MET2", "MET1E", "MET4", "WAIST","LIVER_STILL", "TYPE2DB",
+"DBPREV", "GLUCOSE", "MET1A")
+
+train <- nhanes_complete[train_ind, !(names(nhanes) %in% vrbls_to_drop)  ]
+test <- nhanes_complete[-train_ind, !(names(nhanes) %in% vrbls_to_drop)  ]
+
+
+### Random forest
+library(randomForest)
+
+
+library(caret)
+library(e1071)
+
+trControl <- trainControl(method = "cv", number = 10, search ="grid")
+
+#46 variables, search with 10 cv
+
+rf_default <- train(NAFLD~.,
+                    data = train,
+                    method = "rf",
+                    metric = "Accuracy",
+                    trControl = trControl)
+print(rf_default)
+
+plot(rf_default)
+
+
+#Confusion matrix train
+p1_default <- predict(rf_default, train[-3])
+confusionMatrix(p1_default, train$NAFLD)
+
+#Confusion matrix test
+
+p1_default <- predict(rf_default, test[-3])
+confusionMatrix(p1_default, test$NAFLD)
+
+
+#create tunegrid and search with 10 fold cv
+tunegrid <- expand.grid(.mtry = 31 )
+modellist <- list()
+
+#train with different ntree parameters
+for (ntree in c(50,100,150,200,250,300,350,400,450,500)){
+  set.seed(123)
+  fit <- train(NAFLD~.,
+               data = train,
+               method = 'rf',
+               metric = 'Accuracy',
+               tuneGrid = tunegrid,
+               trControl = trControl,
+               ntree = ntree)
+  key <- toString(ntree)
+  modellist[[key]] <- fit
+}
+
+#Compare results
+results <- resamples(modellist)
+summary(results)
+dotplot(results)
+
+rf <- randomForest( NAFLD ~ . , data = train , mtry=31, proximity=TRUE)
+print(rf)
+plot(rf)
+
+#Final model ntree=200, mtry=31
+
+rf_final <- randomForest( NAFLD ~ . , data = train , mtry=31,ntree=200, proximity=TRUE)
+print(rf_final)
+plot(rf_final)
+
+importance(rf_final)
+
+varImpPlot(rf_final,
+           sort = T,
+           n.var = 15,
+           main = "Top 15 - Variable Importance")
+partialPlot(rf_final, test, FAST, "1")
+partialPlot(rf_final, test, BMI, "1")
+
+MDSplot(rf_final, test$NAFLD, main="MDSplot")
+
+
+p <- predict(rf_final, test)
+confusionMatrix(p, test$NAFLD)
+
+
+# Validation set assessment #2: ROC curves and AUC
+# Needs to import ROCR package for ROC curve plotting:
+library(ROCR)
+# Calculate the probability of new observations belonging to each class
+# prediction_for_roc_curve will be a matrix with dimensions data_set_size x number_of_classes
+prediction_for_roc_curve <- predict(rf_final,test[,-3],type="prob")
+# Use pretty colours:
+pretty_colours <- c("#F8766D","#00BA38","#619CFF")
+# Specify the different classes 
+classes <- levels(test$NAFLD)
+# For each class
+for (i in 1:2)
+{
+  # Define which observations belong to class[i]
+  true_values <- ifelse(test[,3]==classes[i],1,0)
+  # Assess the performance of classifier for class[i]
+  pred <- prediction(prediction_for_roc_curve[,i],true_values)
+  perf <- performance(pred, "tpr", "fpr")
+  if (i==1)
+  {
+    plot(perf,main="ROC Curve",col=pretty_colours[i]) 
+  }
+  else
+  {
+    plot(perf,main="ROC Curve",col=pretty_colours[i],add=TRUE) 
+  }
+  # Calculate the AUC and print it to screen
+  auc.perf <- performance(pred, measure = "auc")
+  print(auc.perf@y.values)
+}
+
+####################################################################
+########### Final model  ###########################################
+
+
+nhanes <- read.csv(file = 'nhanes.csv')
+
+nhanes$NAFLD[!nhanes$NAFLD=="1)Non-NAFLD"] <- 1
+nhanes$NAFLD[nhanes$NAFLD=="1)Non-NAFLD"] <- 0
+
+for (i in names(nhanes)) {
+  nhanes[,i][grepl("[Uu]nknown", nhanes[,i])] <- NA 
+} 
+
+nhanes_char <- nhanes[, sapply(nhanes, class) == 'character']
+
+for(i in names(nhanes_char)){
+  nhanes[,i ] <- as.factor(nhanes[,i ])
+}
+
+imp <- mice(nhanes,maxit=10)
+plot(imp)
+nhanes_complete <- complete(imp)
+
+vrbls_to_drop <- c("SEQN" , "COHORT", "AUTO_HEP", "VIR_HEP",
+                   "LIV_CIR", "LIV_FIB", "WGTSURG", "BMIGRP", "AGEGRP",
+                   "MET2", "MET1E", "MET4", "WAIST","LIVER_STILL", "TYPE2DB",
+                   "DBPREV", "GLUCOSE", "MET1A")
+
+train <- nhanes_complete[train_ind, !(names(nhanes) %in% vrbls_to_drop)  ]
+test <- nhanes_complete[-train_ind, !(names(nhanes) %in% vrbls_to_drop)  ]
+
+rf_final <- randomForest( NAFLD ~ . , data = train , mtry=31,ntree=200, proximity=TRUE)
+p <- predict(rf_final, test)
+confusionMatrix(p, test$NAFLD)
+
